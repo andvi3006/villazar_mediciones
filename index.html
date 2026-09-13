@@ -1,0 +1,1571 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CliniCare | Historia Clínica & Seguimiento</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & React DOM -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    @media print {
+      body * { visibility: hidden; }
+      #print-area, #print-area * { visibility: visible; }
+      #print-area { 
+        position: absolute; 
+        left: 0; 
+        top: 0; 
+        width: 100%; 
+        padding: 0;
+        margin: 0;
+      }
+      .no-print { display: none !important; }
+      .print-only { display: block !important; }
+    }
+    .print-only { display: none; }
+  </style>
+</head>
+<body class="bg-slate-100 font-sans text-slate-800 antialiased min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // Función auxiliar para parsear fechas formateadas como DD/MM/YYYY o YYYY-MM-DD
+    const parseFecha = (strFecha) => {
+      if (!strFecha) return null;
+      if (strFecha.includes('/')) {
+        const partes = strFecha.split('/');
+        return new Date(partes[2], partes[1] - 1, partes[0]);
+      }
+      return new Date(strFecha);
+    };
+
+    // Función auxiliar para sumar meses exactos manteniendo el mismo día
+    const sumarMesesMismaFecha = (fechaBase, meses) => {
+      const d = new Date(fechaBase);
+      const diaDeseado = d.getDate();
+      d.setMonth(d.getMonth() + meses);
+      
+      if (d.getDate() !== diaDeseado) {
+        d.setDate(0);
+      }
+      return d.toLocaleDateString();
+    };
+
+    // Evaluador Clínico Exacto Corregido
+    const evaluarNivelClinico = (tipo, valorObj, condicion) => {
+      if (tipo === 'Control de Glucosa') {
+        const num = parseFloat(valorObj.glucosa);
+        if (isNaN(num)) return { estado: 'normal', mensaje: 'Valor no válido' };
+        
+        if (condicion === 'En Ayunas') {
+          if (num < 70) return { estado: 'critico', mensaje: '⚠️ Hipoglucemia (<70 mg/dL)' };
+          if (num >= 70 && num <= 99) return { estado: 'normal', mensaje: '✓ Glucosa Normal (70-99 mg/dL)' };
+          if (num >= 100 && num <= 125) return { estado: 'alerta', mensaje: '⚡ Prediabetes (100-125 mg/dL)' };
+          if (num >= 126) return { estado: 'critico', mensaje: '⚠️ Diabetes (≥126 mg/dL)' };
+        } else if (condicion === 'Postprandial (2h después de comer)') {
+          if (num < 70) return { estado: 'critico', mensaje: '⚠️ Hipoglucemia (<70 mg/dL)' };
+          if (num < 140) return { estado: 'normal', mensaje: '✓ Glucosa Normal Postprandial (<140 mg/dL)' };
+          if (num >= 140 && num <= 199) return { estado: 'alerta', mensaje: '⚡ Tolerancia Alterada (140-199 mg/dL)' };
+          if (num >= 200) return { estado: 'critico', mensaje: '⚠️ Glucosa Muy Alta (≥200 mg/dL)' };
+        } else {
+          if (num < 70) return { estado: 'critico', mensaje: '⚠️ Hipoglucemia (<70 mg/dL)' };
+          if (num >= 200) return { estado: 'critico', mensaje: '⚠️ Elevación Crítica (≥200 mg/dL)' };
+          if (num >= 140) return { estado: 'alerta', mensaje: '⚡ Glucosa Elevada (≥140 mg/dL)' };
+          return { estado: 'normal', mensaje: '✓ Glucosa Estable' };
+        }
+      }
+
+      if (tipo === 'Presión Arterial') {
+        const sis = parseFloat(valorObj.sistolica);
+        const dia = parseFloat(valorObj.diastolica);
+
+        if (isNaN(sis) || isNaN(dia)) return { estado: 'normal', mensaje: 'Ingrese ambos valores' };
+
+        if (sis >= 180 || dia >= 120) {
+          if (sis >= 180 && dia < 90) {
+            return { estado: 'critico', mensaje: '🚨 Hipertensión Sistólica Aislada Severa (Sístole ≥180 mmHg)' };
+          }
+          return { estado: 'critico', mensaje: '🚨 Crisis Hipertensiva (≥180 o ≥120 mmHg)' };
+        }
+
+        if (sis >= 140 || dia >= 90) {
+          if (sis >= 140 && dia < 80) {
+            return { estado: 'critico', mensaje: '⚠️ Hipertensión Sistólica Aislada (Nivel 2: Sístole ≥140 mmHg)' };
+          }
+          return { estado: 'critico', mensaje: '⚠️ Hipertensión Nivel 2 (≥140 o ≥90 mmHg)' };
+        }
+
+        if (sis < 90 || dia < 60) return { estado: 'critico', mensaje: '⚠️ Hipotensión (<90 o <60 mmHg)' };
+
+        if (sis <= 120 && dia <= 80) return { estado: 'normal', mensaje: '✓ Presión Arterial Normal (≤120 y ≤80 mmHg)' };
+
+        if ((sis >= 130 && sis <= 139) || (dia > 80 && dia <= 89)) {
+          return { estado: 'alerta', mensaje: '⚡ Hipertensión Nivel 1 (130-139 / 81-89 mmHg)' };
+        }
+        if (sis > 120 && sis < 130 && dia <= 80) {
+          return { estado: 'alerta', mensaje: '⚡ Presión Elevada (121-129 y ≤80 mmHg)' };
+        }
+
+        return { estado: 'normal', mensaje: '✓ Presión Arterial Normal' };
+      }
+
+      return { estado: 'normal', mensaje: 'Valor Estable' };
+    };
+
+    function App() {
+      const [vistaActual, setVistaActual] = useState('seguimiento');
+
+      const [pacientes, setPacientes] = useState(() => {
+        const guardados = localStorage.getItem('clinicare_pacientes_v8');
+        return guardados ? JSON.parse(guardados) : [
+          {
+            id: '1',
+            nombre: 'María Perez',
+            dni: '72257066',
+            genero: 'Femenino',
+            fechaNacimiento: '2000-06-30',
+            telefono: '987654321',
+            contactoEmergencia: 'Carlos Pérez - 912345678',
+            tipoSangre: 'O+',
+            embarazada: 'No',
+            enfermedadesBase: ['Diabetes'],
+            otrasAfecciones: 'Gastritis Crónica',
+            alergias: 'Penicilina',
+            severidadAlergia: 'Severa (Anafilaxia / Riesgo de Vida)',
+            inyeccionesAnticonceptivas: [
+              {
+                id: 'iny_1',
+                fechaAplicacion: new Date().toLocaleDateString(),
+                medicamento: 'Cyclofem',
+                tipo: 'Mensual',
+                proximaFecha: sumarMesesMismaFecha(new Date(), 1),
+                observacion: 'Aplicación en glúteo derecho sin complicaciones'
+              }
+            ],
+            seguimientos: []
+          }
+        ];
+      });
+
+      const [filtroEstado, setFiltroEstado] = useState('todos');
+      const [filtroGeneroAnticonceptivo, setFiltroGeneroAnticonceptivo] = useState('Femenino');
+      const [busqueda, setBusqueda] = useState('');
+      const [pacienteSeleccionado, setPacienteSeleccionado] = useState(null);
+      const [pacienteAnticonceptivoSel, setPacienteAnticonceptivoSel] = useState(null);
+      
+      const [seguimientoImprimir, setSeguimientoImprimir] = useState(null);
+      const [impresionAnticonceptivos, setImpresionAnticonceptivos] = useState(false);
+
+      const [editandoPacienteId, setEditandoPacienteId] = useState(null);
+
+      const [formRegistro, setFormRegistro] = useState({
+        nombre: '',
+        dni: '',
+        genero: 'Femenino',
+        fechaNacimiento: '',
+        telefono: '',
+        contactoEmergencia: '',
+        tipoSangre: 'No especificado',
+        embarazada: 'No',
+        enfermedadesBase: [],
+        otrasAfecciones: '',
+        alergias: '',
+        severidadAlergia: 'Leve (Urticaria/Picazón)'
+      });
+
+      const [nuevaMedicion, setNuevaMedicion] = useState({
+        tipo: 'Control de Glucosa',
+        glucosa: '',
+        sistolica: '',
+        diastolica: '',
+        condicion: 'En Ayunas',
+        observacion: ''
+      });
+
+      const [nuevaInyeccion, setNuevaInyeccion] = useState({
+        medicamento: '',
+        tipo: 'Mensual',
+        observacion: ''
+      });
+
+      useEffect(() => {
+        localStorage.setItem('clinicare_pacientes_v8', JSON.stringify(pacientes));
+      }, [pacientes]);
+
+      // EXPORTAR JSON
+      const handleExportarDatos = () => {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(pacientes, null, 2));
+        const downloadAnchor = document.createElement('a');
+        const fechaActual = new Date().toISOString().split('T')[0];
+        downloadAnchor.setAttribute("href", dataStr);
+        downloadAnchor.setAttribute("download", `Respaldos_BoticaVillazar_${fechaActual}.json`);
+        document.body.appendChild(downloadAnchor);
+        downloadAnchor.click();
+        downloadAnchor.remove();
+      };
+
+      // IMPORTAR JSON
+      const handleImportarDatos = (e) => {
+        const fileReader = new FileReader();
+        if (e.target.files && e.target.files[0]) {
+          fileReader.readAsText(e.target.files[0], "UTF-8");
+          fileReader.onload = (event) => {
+            try {
+              const datosImportados = JSON.parse(event.target.result);
+              if (Array.isArray(datosImportados)) {
+                if (confirm("¿Estás seguro de restaurar este respaldo? Reemplazará la base de datos actual.")) {
+                  setPacientes(datosImportados);
+                  alert("¡Base de datos restaurada con éxito!");
+                }
+              } else {
+                alert("El archivo subido no tiene un formato válido.");
+              }
+            } catch (error) {
+              alert("Error al leer el archivo JSON.");
+            }
+          };
+        }
+      };
+
+      // ENVIAR SEGUIMIENTO CLÍNICO A WHATSAPP
+      const handleEnviarWhatsAppMediciones = (paciente, seguimiento) => {
+        if (!paciente.telefono) return alert("El paciente no tiene número de teléfono.");
+
+        let numLimpio = paciente.telefono.replace(/\D/g, '');
+        if (numLimpio.length === 9) numLimpio = '51' + numLimpio;
+
+        let mensaje = `🏥 *BOTICA / VILLAZAR - SEGUIMIENTO CLÍNICO N°${seguimiento.numero}*\n`;
+        mensaje += `👤 *Paciente:* ${paciente.nombre}\n`;
+        mensaje += `📄 *DNI:* ${paciente.dni}\n`;
+        mensaje += `📅 *Fecha:* ${new Date().toLocaleDateString()}\n\n`;
+        mensaje += `📋 *RESULTADOS CLÍNICOS:*\n`;
+
+        if (seguimiento.mediciones.length === 0) {
+          mensaje += `No hay lecturas en este seguimiento.\n`;
+        } else {
+          seguimiento.mediciones.forEach((m, idx) => {
+            mensaje += `\n${idx + 1}. *${m.tipo}*\n`;
+            mensaje += `   • Lectura: ${m.valorTexto}\n`;
+            mensaje += `   • Fecha/Hora: ${m.fecha}\n`;
+            mensaje += `   • Estado: ${m.evaluacion ? m.evaluacion.mensaje : 'Registrado'}\n`;
+          });
+        }
+
+        mensaje += `\nGracias por su confianza. ¡Cuidamos de su salud!`;
+        window.open(`https://api.whatsapp.com/send?phone=${numLimpio}&text=${encodeURIComponent(mensaje)}`, '_blank');
+      };
+
+      // ENVIAR RECORDATORIO DE ANTICONCEPTIVO VÍA WHATSAPP (5 DÍAS O 1 DÍA)
+      const handleEnviarWhatsAppRecordatorioAnticonceptivo = (paciente, diasFaltantes) => {
+        if (!paciente.telefono) return alert("El paciente no tiene número de teléfono.");
+
+        let numLimpio = paciente.telefono.replace(/\D/g, '');
+        if (numLimpio.length === 9) numLimpio = '51' + numLimpio;
+
+        const inyecciones = paciente.inyeccionesAnticonceptivas || [];
+        if (inyecciones.length === 0) return alert("El paciente no tiene inyecciones registradas.");
+
+        const ultima = inyecciones[0];
+        const tratamientoDesc = ultima.tipo === 'Mensual' ? 'mensual' : 'trimestral';
+
+        let mensaje = `💉 *BOTICA / VILLAZAR - RECORDATORIO DE APLICACIÓN*\n\n`;
+        mensaje += `Hola casera/o *${paciente.nombre}*, no se olvide de su aplicación ${tratamientoDesc} (*${ultima.medicamento}*).\n\n`;
+        
+        mensaje += `📅 *Última aplicación:* ${ultima.fechaAplicacion}\n`;
+        mensaje += `📅 *Próxima aplicación:* ${ultima.proximaFecha}\n\n`;
+
+        if (diasFaltantes === 1) {
+          mensaje += `⏰ *¡ATENCIÓN!* Le recordamos que *MAÑANA (${ultima.proximaFecha})* le toca la aplicación de su inyección.\n`;
+        } else if (diasFaltantes === 5) {
+          mensaje += `🗓️ Le recordamos que en *5 DÍAS (${ultima.proximaFecha})* le corresponde la aplicación de su inyección.\n`;
+        } else {
+          mensaje += `🗓️ Su próxima fecha calculada de aplicación es el *${ultima.proximaFecha}*.\n`;
+        }
+
+        mensaje += `\nLe esperamos en la botica para aplicársela a tiempo y mantener la efectividad. ¡Que tenga excelente día!`;
+        window.open(`https://api.whatsapp.com/send?phone=${numLimpio}&text=${encodeURIComponent(mensaje)}`, '_blank');
+      };
+
+      // ENVIAR AGRADECIMIENTO POR WHATSAPP
+      const handleEnviarWhatsAppAgradecimiento = (paciente) => {
+        if (!paciente.telefono) return alert("El paciente no tiene número de teléfono.");
+
+        let numLimpio = paciente.telefono.replace(/\D/g, '');
+        if (numLimpio.length === 9) numLimpio = '51' + numLimpio;
+
+        const inyecciones = paciente.inyeccionesAnticonceptivas || [];
+        if (inyecciones.length === 0) return alert("El paciente no tiene inyecciones registradas.");
+
+        const ultima = inyecciones[0];
+
+        let mensaje = `✨ *BOTICA VILLAZAR*\n\n`;
+        mensaje += `Gracias por su preferencia, gracias por confiar en Botica Villazar.\n\n`;
+        mensaje += `💉 *Ampolla aplicada:* ${ultima.medicamento} (${ultima.tipo})\n`;
+        mensaje += `📅 *Fecha que se aplicó:* ${ultima.fechaAplicacion}\n`;
+        mensaje += `📅 *Fecha que le tocaría:* ${ultima.proximaFecha}\n\n`;
+        mensaje += `¡Estamos para servirle y cuidar de su salud siempre! 😊`;
+
+        window.open(`https://api.whatsapp.com/send?phone=${numLimpio}&text=${encodeURIComponent(mensaje)}`, '_blank');
+      };
+
+      const handleTipoControlChange = (nuevoTipo) => {
+        let condicionDefecto = nuevoTipo === 'Control de Glucosa' ? 'En Ayunas' : 'En Reposo';
+        setNuevaMedicion({
+          ...nuevaMedicion,
+          tipo: nuevoTipo,
+          condicion: condicionDefecto
+        });
+      };
+
+      const handleCheckboxEnfermedad = (enfermedad) => {
+        setFormRegistro(prev => {
+          const existe = prev.enfermedadesBase.includes(enfermedad);
+          return {
+            ...prev,
+            enfermedadesBase: existe
+              ? prev.enfermedadesBase.filter(e => e !== enfermedad)
+              : [...prev.enfermedadesBase, enfermedad]
+          };
+        });
+      };
+
+      // ABRIR EDICION DIRECTO DESDE LISTA DE PACIENTES
+      const handleIniciarEditarPaciente = (paciente) => {
+        setPacienteSeleccionado(null);
+        setPacienteAnticonceptivoSel(null);
+
+        setFormRegistro({
+          nombre: paciente.nombre || '',
+          dni: paciente.dni || '',
+          genero: paciente.genero || 'Femenino',
+          fechaNacimiento: paciente.fechaNacimiento || '',
+          telefono: paciente.telefono || '',
+          contactoEmergencia: paciente.contactoEmergencia || '',
+          tipoSangre: paciente.tipoSangre || 'No especificado',
+          embarazada: paciente.embarazada || 'No',
+          enfermedadesBase: paciente.enfermedadesBase || [],
+          otrasAfecciones: paciente.otrasAfecciones || '',
+          alergias: paciente.alergias || '',
+          severidadAlergia: paciente.severidadAlergia || 'Leve (Urticaria/Picazón)'
+        });
+
+        setEditandoPacienteId(paciente.id);
+        setVistaActual('registro');
+      };
+
+      const handleRegistrarOActualizarPaciente = (e) => {
+        e.preventDefault();
+        if (!formRegistro.nombre || !formRegistro.dni) {
+          alert("Por favor complete al menos el Nombre y el DNI.");
+          return;
+        }
+
+        if (editandoPacienteId) {
+          const pacientesActualizados = pacientes.map(p => {
+            if (p.id === editandoPacienteId) {
+              return { ...p, ...formRegistro };
+            }
+            return p;
+          });
+          setPacientes(pacientesActualizados);
+          alert("Datos del paciente actualizados con éxito.");
+        } else {
+          const nuevoPaciente = {
+            ...formRegistro,
+            id: Date.now().toString(),
+            inyeccionesAnticonceptivas: [],
+            seguimientos: []
+          };
+          setPacientes([nuevoPaciente, ...pacientes]);
+          alert("Paciente registrado con éxito.");
+        }
+
+        setFormRegistro({
+          nombre: '',
+          dni: '',
+          genero: 'Femenino',
+          fechaNacimiento: '',
+          telefono: '',
+          contactoEmergencia: '',
+          tipoSangre: 'No especificado',
+          embarazada: 'No',
+          enfermedadesBase: [],
+          otrasAfecciones: '',
+          alergias: '',
+          severidadAlergia: 'Leve (Urticaria/Picazón)'
+        });
+
+        setEditandoPacienteId(null);
+        setVistaActual('seguimiento');
+      };
+
+      const handleAperturarSeguimiento = () => {
+        const seguimientoAbierto = pacienteSeleccionado.seguimientos.find(s => s.estado === 'abierto');
+        if (seguimientoAbierto) {
+          return alert(`El paciente ya cuenta con el Seguimiento N°${seguimientoAbierto.numero} abierto en curso.`);
+        }
+
+        const nuevoNumero = pacienteSeleccionado.seguimientos.length + 1;
+        const nuevoSeguimiento = {
+          id: Date.now().toString(),
+          numero: nuevoNumero,
+          fechaInicio: new Date().toLocaleString(),
+          fechaFin: null,
+          estado: 'abierto',
+          mediciones: []
+        };
+
+        const pacientesActualizados = pacientes.map(p => {
+          if (p.id === pacienteSeleccionado.id) {
+            return {
+              ...p,
+              seguimientos: [nuevoSeguimiento, ...p.seguimientos]
+            };
+          }
+          return p;
+        });
+
+        setPacientes(pacientesActualizados);
+        setPacienteSeleccionado(prev => ({
+          ...prev,
+          seguimientos: [nuevoSeguimiento, ...prev.seguimientos]
+        }));
+      };
+
+      const handleConcluirSeguimiento = (seguimientoId) => {
+        if (!confirm("¿Deseas marcar este seguimiento como Paciente Estable / Alta?")) return;
+
+        const fechaCierre = new Date().toLocaleString();
+
+        const pacientesActualizados = pacientes.map(p => {
+          if (p.id === pacienteSeleccionado.id) {
+            const segs = p.seguimientos.map(s => {
+              if (s.id === seguimientoId) {
+                return { ...s, estado: 'concluido', fechaFin: fechaCierre };
+              }
+              return s;
+            });
+            return { ...p, seguimientos: segs };
+          }
+          return p;
+        });
+
+        setPacientes(pacientesActualizados);
+        setPacienteSeleccionado(prev => ({
+          ...prev,
+          seguimientos: prev.seguimientos.map(s => {
+            if (s.id === seguimientoId) {
+              return { ...s, estado: 'concluido', fechaFin: fechaCierre };
+            }
+            return s;
+          })
+        }));
+      };
+
+      const handleAgregarMedicion = (e, seguimientoId) => {
+        e.preventDefault();
+
+        let valorTexto = '';
+
+        if (nuevaMedicion.tipo === 'Control de Glucosa') {
+          if (!nuevaMedicion.glucosa) return alert("Ingrese el valor de la glucosa.");
+          valorTexto = `${nuevaMedicion.glucosa} mg/dL`;
+        } else if (nuevaMedicion.tipo === 'Presión Arterial') {
+          if (!nuevaMedicion.sistolica || !nuevaMedicion.diastolica) return alert("Ingrese ambos valores.");
+          valorTexto = `${nuevaMedicion.sistolica}/${nuevaMedicion.diastolica} mmHg`;
+        }
+
+        const evaluacion = evaluarNivelClinico(nuevaMedicion.tipo, nuevaMedicion, nuevaMedicion.condicion);
+
+        const registro = {
+          id: Date.now().toString(),
+          fecha: new Date().toLocaleString(),
+          tipo: nuevaMedicion.tipo,
+          valorTexto: valorTexto,
+          condicion: nuevaMedicion.condicion,
+          observacion: nuevaMedicion.observacion,
+          evaluacion: evaluacion
+        };
+
+        const pacientesActualizados = pacientes.map(p => {
+          if (p.id === pacienteSeleccionado.id) {
+            const segs = p.seguimientos.map(s => {
+              if (s.id === seguimientoId) {
+                return { ...s, mediciones: [registro, ...s.mediciones] };
+              }
+              return s;
+            });
+            return { ...p, seguimientos: segs };
+          }
+          return p;
+        });
+
+        setPacientes(pacientesActualizados);
+        setPacienteSeleccionado(prev => ({
+          ...prev,
+          seguimientos: prev.seguimientos.map(s => {
+            if (s.id === seguimientoId) {
+              return { ...s, mediciones: [registro, ...s.mediciones] };
+            }
+            return s;
+          })
+        }));
+
+        setNuevaMedicion({
+          tipo: nuevaMedicion.tipo,
+          glucosa: '',
+          sistolica: '',
+          diastolica: '',
+          condicion: nuevaMedicion.condicion,
+          observacion: ''
+        });
+      };
+
+      // AGREGAR INYECCIÓN ANTICONCEPTIVA CON CÁLCULO MENSUAL EXACTO
+      const handleAgregarInyeccionAnticonceptiva = (e) => {
+        e.preventDefault();
+        if (!nuevaInyeccion.medicamento) return alert("Ingrese el nombre/marca del inyectable.");
+
+        const hoy = new Date();
+        const meses = nuevaInyeccion.tipo === 'Mensual' ? 1 : 3;
+        const proxima = sumarMesesMismaFecha(hoy, meses);
+
+        const registro = {
+          id: Date.now().toString(),
+          fechaAplicacion: new Date().toLocaleDateString(),
+          medicamento: nuevaInyeccion.medicamento,
+          tipo: nuevaInyeccion.tipo,
+          proximaFecha: proxima,
+          observacion: nuevaInyeccion.observacion
+        };
+
+        const pacientesActualizados = pacientes.map(p => {
+          if (p.id === pacienteAnticonceptivoSel.id) {
+            const listaAnt = p.inyeccionesAnticonceptivas || [];
+            return { ...p, inyeccionesAnticonceptivas: [registro, ...listaAnt] };
+          }
+          return p;
+        });
+
+        setPacientes(pacientesActualizados);
+        setPacienteAnticonceptivoSel(prev => ({
+          ...prev,
+          inyeccionesAnticonceptivas: [registro, ...(prev.inyeccionesAnticonceptivas || [])]
+        }));
+
+        setNuevaInyeccion({
+          medicamento: '',
+          tipo: 'Mensual',
+          observacion: ''
+        });
+      };
+
+      // CÁLCULO DÍAS RESTANTES PARA INYECCIÓN
+      const calcularDiasRestantes = (strProximaFecha) => {
+        const fechaProx = parseFecha(strProximaFecha);
+        if (!fechaProx) return null;
+        
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+        fechaProx.setHours(0, 0, 0, 0);
+
+        const diffTiempo = fechaProx.getTime() - hoy.getTime();
+        return Math.ceil(diffTiempo / (1000 * 3600 * 24));
+      };
+
+      const pacientesFiltrados = pacientes.filter(p => {
+        const coincideBusqueda = p.nombre.toLowerCase().includes(busqueda.toLowerCase()) || p.dni.includes(busqueda);
+        const tieneAbierto = p.seguimientos.some(s => s.estado === 'abierto');
+
+        if (filtroEstado === 'todos') return coincideBusqueda;
+        if (filtroEstado === 'activo') return coincideBusqueda && tieneAbierto;
+        if (filtroEstado === 'estable') return coincideBusqueda && !tieneAbierto;
+        return true;
+      });
+
+      const pacientesAnticonceptivosFiltrados = pacientes.filter(p => {
+        const coincideBusqueda = p.nombre.toLowerCase().includes(busqueda.toLowerCase()) || p.dni.includes(busqueda);
+        const coincideGenero = filtroGeneroAnticonceptivo === 'todos' || (p.genero || 'Femenino') === filtroGeneroAnticonceptivo;
+        return coincideBusqueda && coincideGenero;
+      });
+
+      // IMPRESIÓN CON NOMBRE PERSONALIZADO DEL PDF
+      const prepararEImprimir = (seg, paciente) => {
+        setSeguimientoImprimir(seg);
+        setImpresionAnticonceptivos(false);
+        const tituloOriginal = document.title;
+        const nombreLimpio = paciente.nombre.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, "").trim().replace(/\s+/g, "_");
+        
+        document.title = `Seguimiento_Clinico_N${seg.numero}_${nombreLimpio}`;
+        
+        setTimeout(() => {
+          window.print();
+          document.title = tituloOriginal;
+        }, 200);
+      };
+
+      const prepararEImprimirAnticonceptivos = (paciente) => {
+        setSeguimientoImprimir(null);
+        setImpresionAnticonceptivos(true);
+        const tituloOriginal = document.title;
+        const nombreLimpio = paciente.nombre.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, "").trim().replace(/\s+/g, "_");
+        
+        document.title = `Seguimiento_Anticonceptivo_${nombreLimpio}`;
+        
+        setTimeout(() => {
+          window.print();
+          document.title = tituloOriginal;
+        }, 200);
+      };
+
+      return (
+        <div class="min-h-screen flex flex-col md:flex-row bg-slate-100">
+          
+          {/* PANEL LATERAL IZQUIERDO (SIDEBAR) */}
+          <aside class="w-full md:w-64 bg-indigo-950 text-slate-200 flex flex-col justify-between shrink-0 no-print shadow-xl">
+            <div>
+              <div class="p-5 border-b border-indigo-900 flex items-center gap-3">
+                <div class="bg-indigo-600 p-2 rounded-lg text-white">
+                  <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <h1 class="font-bold text-white text-base leading-tight">BOTICA / VILLAZAR</h1>
+                  <p class="text-[11px] text-indigo-300">Sistema de Seguimiento</p>
+                </div>
+              </div>
+
+              <nav class="p-3 space-y-1">
+                <button
+                  onClick={() => { setVistaActual('seguimiento'); }}
+                  class={`w-full text-left px-4 py-3 rounded-xl font-medium text-xs md:text-sm transition flex items-center gap-3 ${
+                    vistaActual === 'seguimiento' ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-200 hover:bg-indigo-900/60'
+                  }`}
+                >
+                  🩺 Mediciones Clínicas
+                </button>
+
+                <button
+                  onClick={() => { setVistaActual('anticonceptivos'); }}
+                  class={`w-full text-left px-4 py-3 rounded-xl font-medium text-xs md:text-sm transition flex items-center gap-3 ${
+                    vistaActual === 'anticonceptivos' ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-200 hover:bg-indigo-900/60'
+                  }`}
+                >
+                  💉 Inyecciones Anticonceptivas
+                </button>
+
+                <button
+                  onClick={() => {
+                    setEditandoPacienteId(null);
+                    setFormRegistro({
+                      nombre: '',
+                      dni: '',
+                      genero: 'Femenino',
+                      fechaNacimiento: '',
+                      telefono: '',
+                      contactoEmergencia: '',
+                      tipoSangre: 'No especificado',
+                      embarazada: 'No',
+                      enfermedadesBase: [],
+                      otrasAfecciones: '',
+                      alergias: '',
+                      severidadAlergia: 'Leve (Urticaria/Picazón)'
+                    });
+                    setVistaActual('registro');
+                  }}
+                  class={`w-full text-left px-4 py-3 rounded-xl font-medium text-xs md:text-sm transition flex items-center gap-3 ${
+                    vistaActual === 'registro' && !editandoPacienteId ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-200 hover:bg-indigo-900/60'
+                  }`}
+                >
+                  ➕ Registrar Nuevo Paciente
+                </button>
+              </nav>
+            </div>
+
+            {/* CONTROLES DE COPIA DE SEGURIDAD EN SIDEBAR */}
+            <div class="p-4 border-t border-indigo-900 bg-indigo-950/80 space-y-2">
+              <p class="text-[10px] font-semibold text-indigo-300 uppercase tracking-wider">Base de Datos JSON</p>
+              <button
+                onClick={handleExportarDatos}
+                class="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+              >
+                📥 Exportar Copia
+              </button>
+              <label class="w-full bg-amber-600 hover:bg-amber-700 text-white py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer">
+                📤 Importar Copia
+                <input type="file" accept=".json" onChange={handleImportarDatos} class="hidden" />
+              </label>
+            </div>
+          </aside>
+
+          {/* MAIN CONTENT AREA */}
+          <main class="flex-grow p-4 md:p-8 overflow-y-auto">
+            
+            {/* VISTA REGISTRO / EDICIÓN */}
+            {vistaActual === 'registro' && (
+              <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 max-w-4xl mx-auto">
+                <h2 class="text-2xl font-bold text-slate-800 border-b pb-4 mb-6">
+                  {editandoPacienteId ? '✏️ Editar Datos del Paciente' : '➕ Nueva Historia Clínica'}
+                </h2>
+
+                <form onSubmit={handleRegistrarOActualizarPaciente} class="space-y-6">
+                  <div>
+                    <h3 class="text-lg font-semibold text-indigo-900 mb-3">1. Datos Personales</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Nombre Completo *</label>
+                        <input
+                          type="text"
+                          required
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.nombre}
+                          onChange={e => setFormRegistro({...formRegistro, nombre: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">DNI / Documento *</label>
+                        <input
+                          type="text"
+                          required
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.dni}
+                          onChange={e => setFormRegistro({...formRegistro, dni: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Género *</label>
+                        <select
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white"
+                          value={formRegistro.genero}
+                          onChange={e => setFormRegistro({...formRegistro, genero: e.target.value})}
+                        >
+                          <option value="Femenino">Femenino</option>
+                          <option value="Masculino">Masculino</option>
+                          <option value="Otro">Otro</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Fecha de Nacimiento *</label>
+                        <input
+                          type="date"
+                          required
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.fechaNacimiento}
+                          onChange={e => setFormRegistro({...formRegistro, fechaNacimiento: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Teléfono (WhatsApp)</label>
+                        <input
+                          type="text"
+                          placeholder="Ej: 987654321"
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.telefono}
+                          onChange={e => setFormRegistro({...formRegistro, telefono: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Contacto Emergencia</label>
+                        <input
+                          type="text"
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.contactoEmergencia}
+                          onChange={e => setFormRegistro({...formRegistro, contactoEmergencia: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Tipo de Sangre</label>
+                        <select
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.tipoSangre}
+                          onChange={e => setFormRegistro({...formRegistro, tipoSangre: e.target.value})}
+                        >
+                          <option>No especificado</option>
+                          <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
+                          <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
+                        </select>
+                      </div>
+
+                      <div class="md:col-span-2 bg-rose-50 border border-rose-200 p-3 rounded-lg">
+                        <label class="block text-xs font-bold text-rose-900 uppercase mb-1">🤰 ¿Está Embarazada?</label>
+                        <select
+                          class="w-full border border-rose-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none bg-white font-medium"
+                          value={formRegistro.embarazada}
+                          onChange={e => setFormRegistro({...formRegistro, embarazada: e.target.value})}
+                        >
+                          <option value="No">No</option>
+                          <option value="Sí">Sí (Gestante / Protocolo Materno)</option>
+                          <option value="No Aplica">No Aplica</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <hr class="border-slate-200" />
+
+                  <div>
+                    <h3 class="text-lg font-semibold text-indigo-900 mb-3">2. Antecedentes Médicos</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-2">Enfermedades Base</label>
+                        <div class="flex flex-wrap gap-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                          {['Diabetes', 'Hipertensión', 'Asma / Respiratoria', 'Insuficiencia Renal'].map(item => (
+                            <label key={item} class="inline-flex items-center gap-2 cursor-pointer text-sm">
+                              <input
+                                type="checkbox"
+                                class="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                                checked={formRegistro.enfermedadesBase.includes(item)}
+                                onChange={() => handleCheckboxEnfermedad(item)}
+                              />
+                              {item}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Otras Enfermedades / Afecciones</label>
+                        <textarea
+                          rows="3"
+                          placeholder="Escriba otras enfermedades o condiciones adicionales..."
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.otrasAfecciones}
+                          onChange={e => setFormRegistro({...formRegistro, otrasAfecciones: e.target.value})}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <hr class="border-slate-200" />
+
+                  <div>
+                    <h3 class="text-lg font-semibold text-indigo-900 mb-3">3. Alergias</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Alergias Conocidas</label>
+                        <input
+                          type="text"
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.alergias}
+                          onChange={e => setFormRegistro({...formRegistro, alergias: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Severidad</label>
+                        <select
+                          class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={formRegistro.severidadAlergia}
+                          onChange={e => setFormRegistro({...formRegistro, severidadAlergia: e.target.value})}
+                        >
+                          <option>Leve (Urticaria/Picazón)</option>
+                          <option>Moderada (Hinchazón)</option>
+                          <option>Severa (Anafilaxia / Riesgo de Vida)</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex justify-end gap-3 pt-4">
+                    {editandoPacienteId && (
+                      <button
+                        type="button"
+                        onClick={() => { setEditandoPacienteId(null); setVistaActual('seguimiento'); }}
+                        class="bg-slate-300 hover:bg-slate-400 text-slate-700 font-semibold px-6 py-3 rounded-lg transition"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-3 rounded-lg shadow-md transition"
+                    >
+                      {editandoPacienteId ? 'Actualizar Datos' : 'Guardar Paciente'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* VISTA MEDICIONES CLÍNICAS */}
+            {vistaActual === 'seguimiento' && (
+              <div class="space-y-6">
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4">
+                  <input
+                    type="text"
+                    placeholder="Buscar paciente por Nombre o DNI..."
+                    class="w-full md:w-96 border border-slate-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    value={busqueda}
+                    onChange={e => setBusqueda(e.target.value)}
+                  />
+
+                  <div class="flex gap-2 w-full md:w-auto">
+                    <button onClick={() => setFiltroEstado('todos')} class={`px-4 py-2 rounded-lg text-xs font-medium transition ${filtroEstado === 'todos' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600'}`}>Todos ({pacientes.length})</button>
+                    <button onClick={() => setFiltroEstado('activo')} class={`px-4 py-2 rounded-lg text-xs font-medium transition ${filtroEstado === 'activo' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'}`}>En Seguimiento Activo ({pacientes.filter(p => p.seguimientos.some(s => s.estado === 'abierto')).length})</button>
+                    <button onClick={() => setFiltroEstado('estable')} class={`px-4 py-2 rounded-lg text-xs font-medium transition ${filtroEstado === 'estable' ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700'}`}>Sin Seguimiento Activo ({pacientes.filter(p => !p.seguimientos.some(s => s.estado === 'abierto')).length})</button>
+                  </div>
+                </div>
+
+                <div class="space-y-4">
+                  {pacientesFiltrados.map(paciente => {
+                    const seguimientoActivo = paciente.seguimientos.find(s => s.estado === 'abierto');
+
+                    return (
+                      <div 
+                        key={paciente.id} 
+                        class="bg-white rounded-xl p-5 border border-slate-200 shadow-sm hover:shadow-md transition"
+                      >
+                        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                          <div class="space-y-2">
+                            <div class="flex flex-wrap items-center gap-3">
+                              <h3 class="text-xl font-bold text-slate-800 capitalize">{paciente.nombre}</h3>
+                              <span class="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded font-mono">DNI: {paciente.dni}</span>
+                              <span class="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded font-semibold">👤 {paciente.genero || 'Femenino'}</span>
+
+                              {paciente.embarazada === 'Sí' && (
+                                <span class="bg-rose-100 text-rose-800 text-xs px-2.5 py-1 rounded-full font-bold">
+                                  🤰 Embarazada
+                                </span>
+                              )}
+
+                              {seguimientoActivo ? (
+                                <span class="bg-emerald-100 text-emerald-800 text-xs px-3 py-1 rounded-full font-bold animate-pulse flex items-center gap-1">
+                                  🟢 Seguimiento N°{seguimientoActivo.numero} En Curso
+                                </span>
+                              ) : (
+                                <span class="bg-slate-100 text-slate-600 text-xs px-3 py-1 rounded-full font-medium">
+                                  Sin Seguimiento Activo (Estable)
+                                </span>
+                              )}
+                            </div>
+
+                            <div class="flex flex-wrap items-center gap-2 text-sm text-slate-600">
+                              <span class="font-medium text-slate-500 text-xs">Diagnósticos:</span>
+                              {paciente.enfermedadesBase.length > 0 ? paciente.enfermedadesBase.map((e, idx) => (
+                                <span key={idx} class="bg-amber-50 text-amber-800 border border-amber-200 text-xs px-2 py-0.5 rounded">{e}</span>
+                              )) : <span class="text-xs text-slate-400">Sin diagnósticos base</span>}
+                            </div>
+
+                            <div class="text-xs text-slate-600">
+                              <span class="font-semibold text-rose-700">Alergias: </span>
+                              {paciente.alergias ? (
+                                <span class="font-medium bg-rose-50 text-rose-900 border border-rose-200 px-2 py-0.5 rounded">
+                                  ⚠️ {paciente.alergias} ({paciente.severidadAlergia})
+                                </span>
+                              ) : (
+                                <span class="text-slate-400">Ninguna registrada</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div class="flex items-center gap-2 w-full md:w-auto justify-end">
+                            <button
+                              onClick={() => handleIniciarEditarPaciente(paciente)}
+                              class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-xs font-semibold shadow transition"
+                            >
+                              ✏️ Editar Paciente
+                            </button>
+
+                            <button
+                              onClick={() => setPacienteSeleccionado(paciente)}
+                              class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow transition"
+                            >
+                              🩺 Ver Mediciones ({paciente.seguimientos.length})
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* VISTA INYECCIONES ANTICONCEPTIVAS (MÓDULO INDEPENDIENTE) */}
+            {vistaActual === 'anticonceptivos' && (
+              <div class="space-y-6">
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4">
+                  <div>
+                    <h2 class="text-xl font-bold text-slate-800">💉 Control de Inyecciones Anticonceptivas</h2>
+                    <p class="text-xs text-slate-500">Módulo de administración con alertas de recordatorio automático de 5 días y 1 día vía WhatsApp.</p>
+                  </div>
+
+                  <div class="flex flex-col sm:flex-row gap-3 w-full md:w-auto items-center">
+                    <div class="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+                      <span class="px-2 text-slate-500 font-medium">Filtrar Género:</span>
+                      <button 
+                        onClick={() => setFiltroGeneroAnticonceptivo('Femenino')}
+                        class={`px-3 py-1 rounded-md font-semibold transition ${filtroGeneroAnticonceptivo === 'Femenino' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+                      >
+                        👩 Femenino
+                      </button>
+                      <button 
+                        onClick={() => setFiltroGeneroAnticonceptivo('todos')}
+                        class={`px-3 py-1 rounded-md font-semibold transition ${filtroGeneroAnticonceptivo === 'todos' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+                      >
+                        👥 Todos los Géneros
+                      </button>
+                    </div>
+
+                    <input
+                      type="text"
+                      placeholder="Buscar por Nombre o DNI..."
+                      class="w-full md:w-64 border border-slate-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                      value={busqueda}
+                      onChange={e => setBusqueda(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {pacientesAnticonceptivosFiltrados.map(paciente => {
+                    const historialAnt = paciente.inyeccionesAnticonceptivas || [];
+                    const ultima = historialAnt[0];
+                    const diasRestantes = ultima ? calcularDiasRestantes(ultima.proximaFecha) : null;
+
+                    // Lógica para color de fondo de las tarjetas según días faltantes
+                    let estiloTarjeta = 'bg-white border-purple-200';
+                    if (diasRestantes !== null) {
+                      if (diasRestantes <= 1) {
+                        // Rojo transparente para 1 día (o vencido)
+                        estiloTarjeta = 'bg-red-500/20 border-red-300 backdrop-blur-sm';
+                      } else if (diasRestantes <= 5) {
+                        // Morado con celeste transparente para 5 días
+                        estiloTarjeta = 'bg-gradient-to-r from-purple-500/20 to-cyan-400/20 border-purple-300 backdrop-blur-sm';
+                      }
+                    }
+
+                    return (
+                      <div key={paciente.id} class={`rounded-xl p-5 border shadow-sm space-y-3 transition-all duration-300 ${estiloTarjeta}`}>
+                        <div class="flex justify-between items-start">
+                          <div>
+                            <div class="flex items-center gap-2">
+                              <h3 class="font-bold text-slate-800 text-base">{paciente.nombre}</h3>
+                              <span class="text-[11px] bg-purple-50 text-purple-700 px-2 py-0.5 rounded font-semibold border border-purple-200">
+                                {paciente.genero || 'Femenino'}
+                              </span>
+                            </div>
+                            <p class="text-xs text-slate-500 mt-1">DNI: {paciente.dni} | Tel: {paciente.telefono || 'Sin teléfono'}</p>
+                            
+                            <p class="text-xs text-rose-700 mt-1">
+                              <strong>Alergias:</strong> {paciente.alergias ? `${paciente.alergias} (${paciente.severidadAlergia})` : 'Ninguna'}
+                            </p>
+                          </div>
+                          
+                          <button
+                            onClick={() => setPacienteAnticonceptivoSel(paciente)}
+                            class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow transition shrink-0"
+                          >
+                            💉 Administrar
+                          </button>
+                        </div>
+
+                        {/* ESTADO ACTUAL Y ALERTAS */}
+                        {ultima ? (
+                          <div class="bg-purple-50/70 p-3.5 rounded-xl border border-purple-200 text-xs space-y-2">
+                            <div class="flex justify-between items-center">
+                              <span class="font-bold text-purple-900">Última Aplicación: {ultima.medicamento} ({ultima.tipo})</span>
+                              <span class="text-slate-500 font-medium">{ultima.fechaAplicacion}</span>
+                            </div>
+
+                            <div class="flex justify-between items-center font-bold text-purple-950 pt-1 border-t border-purple-200/60">
+                              <span>Próxima Aplicación:</span>
+                              <div class="flex items-center gap-2">
+                                <span class="bg-purple-200 px-2.5 py-1 rounded-md text-purple-900 font-bold">📅 {ultima.proximaFecha}</span>
+                                {diasRestantes !== null && (
+                                  <span class={`px-2.5 py-1 rounded-md font-bold text-white text-[11px] ${
+                                    diasRestantes <= 1 ? 'bg-red-600 animate-pulse' :
+                                    diasRestantes <= 5 ? 'bg-amber-600' : 'bg-emerald-600'
+                                  }`}>
+                                    {diasRestantes < 0 ? `Vencido (${Math.abs(diasRestantes)}d)` :
+                                     diasRestantes === 0 ? '¡HOY LE TOCA!' :
+                                     `Faltan ${diasRestantes} días`}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* BOTONES DIRECTOS PARA WHATSAPP CADA 5 DÍAS, 1 DÍA Y AGRADECIMIENTO */}
+                            <div class="pt-2 flex flex-wrap gap-2 border-t border-purple-200/60">
+                              <span class="text-[11px] font-bold text-purple-900 w-full mb-0.5">💬 Recordatorios directos WhatsApp:</span>
+                              <button
+                                onClick={() => handleEnviarWhatsAppRecordatorioAnticonceptivo(paciente, 5)}
+                                class="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-1.5 px-2 rounded-lg font-bold text-[11px] shadow transition flex items-center justify-center gap-1"
+                              >
+                                📲 Faltando 5 Días
+                              </button>
+                              <button
+                                onClick={() => handleEnviarWhatsAppRecordatorioAnticonceptivo(paciente, 1)}
+                                class="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-1.5 px-2 rounded-lg font-bold text-[11px] shadow transition flex items-center justify-center gap-1"
+                              >
+                                🚨 Faltando 1 Día
+                              </button>
+                              <button
+                                onClick={() => handleEnviarWhatsAppAgradecimiento(paciente)}
+                                class="flex-1 bg-teal-600 hover:bg-teal-700 text-white py-1.5 px-2 rounded-lg font-bold text-[11px] shadow transition flex items-center justify-center gap-1"
+                              >
+                                🤝 Agradecimiento
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div class="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-500 italic">
+                            Sin registro previo de anticonceptivos.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+          </main>
+
+          {/* MODAL MEDICIONES CLÍNICAS */}
+          {pacienteSeleccionado && (
+            <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div class="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
+                
+                <div class="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-50 no-print">
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <h2 class="text-xl font-bold text-slate-800 capitalize">{pacienteSeleccionado.nombre}</h2>
+                      <span class="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-semibold border border-indigo-200">
+                        {pacienteSeleccionado.genero || 'Femenino'}
+                      </span>
+                      {pacienteSeleccionado.embarazada === 'Sí' && (
+                        <span class="bg-rose-100 text-rose-800 text-xs px-2.5 py-0.5 rounded-full font-bold">
+                          🤰 Embarazada
+                        </span>
+                      )}
+                    </div>
+                    <p class="text-xs text-slate-500 mt-0.5">
+                      DNI: {pacienteSeleccionado.dni} | Teléfono: {pacienteSeleccionado.telefono || 'Sin registro'} | Diagnósticos: {pacienteSeleccionado.enfermedadesBase.join(', ') || 'Ninguno'}
+                    </p>
+                    <p class="text-xs text-rose-800 mt-1 font-medium">
+                      ⚠️ <strong>Alergias:</strong> {pacienteSeleccionado.alergias ? `${pacienteSeleccionado.alergias} (${pacienteSeleccionado.severidadAlergia})` : 'Ninguna registrada'}
+                    </p>
+                  </div>
+
+                  <div class="flex items-center gap-2">
+                    <button 
+                      onClick={handleAperturarSeguimiento} 
+                      class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow transition"
+                    >
+                      ➕ Aperturar Seguimiento
+                    </button>
+                    <button onClick={() => setPacienteSeleccionado(null)} class="text-slate-400 hover:text-slate-600 p-2 text-lg">✕</button>
+                  </div>
+                </div>
+
+                <div id="print-area" class="p-6 overflow-y-auto flex-grow space-y-6">
+                  
+                  {seguimientoImprimir && (
+                    <div class="print-only border-b-2 border-indigo-900 pb-4 mb-4">
+                      <div class="flex justify-between items-center mb-2">
+                        <h1 class="text-2xl font-bold text-indigo-900">BOTICA-VILLAZAR</h1>
+                        <span class="text-xs text-slate-500">Impreso: {new Date().toLocaleDateString()}</span>
+                      </div>
+                      <div class="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-3 rounded border">
+                        <p><strong>Paciente:</strong> {pacienteSeleccionado.nombre}</p>
+                        <p><strong>DNI:</strong> {pacienteSeleccionado.dni}</p>
+                        <p><strong>Género:</strong> {pacienteSeleccionado.genero || 'Femenino'}</p>
+                        <p><strong>¿Embarazada?:</strong> {pacienteSeleccionado.embarazada}</p>
+                        <p><strong>Alergias:</strong> {pacienteSeleccionado.alergias ? `${pacienteSeleccionado.alergias} (${pacienteSeleccionado.severidadAlergia})` : 'Ninguna'}</p>
+                        <p><strong>Seguimiento N°:</strong> {seguimientoImprimir.numero}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {pacienteSeleccionado.seguimientos.length === 0 ? (
+                    <div class="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-300 no-print">
+                      <p class="text-sm text-slate-500 mb-3">Este paciente no tiene sesiones clínicas abiertas.</p>
+                      <button 
+                        onClick={handleAperturarSeguimiento} 
+                        class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow"
+                      >
+                        ➕ Aperturar Primer Seguimiento
+                      </button>
+                    </div>
+                  ) : (
+                    pacienteSeleccionado.seguimientos.map(seg => {
+                      const glucosaSeg = seg.mediciones.filter(m => m.tipo === 'Control de Glucosa');
+                      const presionSeg = seg.mediciones.filter(m => m.tipo === 'Presión Arterial');
+
+                      return (
+                        <div key={seg.id} class={`rounded-xl border ${seg.estado === 'abierto' ? 'border-emerald-400 bg-emerald-50/20 shadow-sm' : 'border-slate-200 bg-white'} p-5 space-y-4`}>
+                          
+                          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b pb-3 no-print">
+                            <div class="flex items-center gap-3">
+                              <h3 class="font-bold text-slate-800 text-base">Seguimiento Clínico N° {seg.numero}</h3>
+                              {seg.estado === 'abierto' ? (
+                                <span class="bg-emerald-100 text-emerald-800 text-xs px-2.5 py-1 rounded-full font-bold animate-pulse">🟢 En Curso (Abierto)</span>
+                              ) : (
+                                <span class="bg-slate-100 text-slate-600 text-xs px-2.5 py-1 rounded-full font-medium">🔒 Concluido ({seg.fechaFin})</span>
+                              )}
+                              <span class="text-xs text-slate-400">Iniciado: {seg.fechaInicio}</span>
+                            </div>
+
+                            <div class="flex items-center gap-2">
+                              <button 
+                                onClick={() => handleEnviarWhatsAppMediciones(pacienteSeleccionado, seg)} 
+                                class="bg-emerald-500 hover:bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow transition flex items-center gap-1"
+                              >
+                                📱 Enviar WhatsApp
+                              </button>
+
+                              <button 
+                                onClick={() => prepararEImprimir(seg, pacienteSeleccionado)} 
+                                class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs px-3 py-1.5 rounded-lg font-medium transition"
+                              >
+                                🖨️ Imprimir PDF
+                              </button>
+
+                              {seg.estado === 'abierto' && (
+                                <button 
+                                  onClick={() => handleConcluirSeguimiento(seg.id)}
+                                  class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow transition"
+                                >
+                                  🔒 Concluir (Alta)
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {seg.estado === 'abierto' && (
+                            <div class="bg-white p-3.5 rounded-xl border border-emerald-200 no-print">
+                              <h4 class="text-xs font-bold text-emerald-900 mb-2">➕ Registrar Lectura Médica</h4>
+                              <form onSubmit={(e) => handleAgregarMedicion(e, seg.id)} class="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs items-end">
+                                <div>
+                                  <label class="font-semibold block mb-1 text-slate-600">Tipo Medicion</label>
+                                  <select class="w-full border p-2 rounded-lg bg-white" value={nuevaMedicion.tipo} onChange={e => handleTipoControlChange(e.target.value)}>
+                                    <option>Control de Glucosa</option>
+                                    <option>Presión Arterial</option>
+                                  </select>
+                                </div>
+
+                                {nuevaMedicion.tipo === 'Control de Glucosa' && (
+                                  <>
+                                    <div>
+                                      <label class="font-semibold block mb-1 text-slate-600">Glucosa (mg/dL)</label>
+                                      <input type="number" required placeholder="Ej: 105" class="w-full border p-2 rounded-lg" value={nuevaMedicion.glucosa} onChange={e => setNuevaMedicion({...nuevaMedicion, glucosa: e.target.value})} />
+                                    </div>
+                                    <div>
+                                      <label class="font-semibold block mb-1 text-slate-600">Condición / Estado</label>
+                                      <select class="w-full border p-2 rounded-lg bg-white" value={nuevaMedicion.condicion} onChange={e => setNuevaMedicion({...nuevaMedicion, condicion: e.target.value})}>
+                                        <option>En Ayunas</option>
+                                        <option>Postprandial (2h después de comer)</option>
+                                        <option>Casual / Aleatorio</option>
+                                      </select>
+                                    </div>
+                                  </>
+                                )}
+
+                                {nuevaMedicion.tipo === 'Presión Arterial' && (
+                                  <>
+                                    <div class="grid grid-cols-2 gap-1">
+                                      <div>
+                                        <label class="font-semibold block mb-1 text-slate-600">Sístole</label>
+                                        <input type="number" required placeholder="120" class="w-full border p-2 rounded-lg" value={nuevaMedicion.sistolica} onChange={e => setNuevaMedicion({...nuevaMedicion, sistolica: e.target.value})} />
+                                      </div>
+                                      <div>
+                                        <label class="font-semibold block mb-1 text-slate-600">Diástole</label>
+                                        <input type="number" required placeholder="80" class="w-full border p-2 rounded-lg" value={nuevaMedicion.diastolica} onChange={e => setNuevaMedicion({...nuevaMedicion, diastolica: e.target.value})} />
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <label class="font-semibold block mb-1 text-slate-600">Condición / Estado</label>
+                                      <select class="w-full border p-2 rounded-lg bg-white" value={nuevaMedicion.condicion} onChange={e => setNuevaMedicion({...nuevaMedicion, condicion: e.target.value})}>
+                                        <option>En Reposo</option>
+                                        <option>Tras Ejercicio / Esfuerzo</option>
+                                        <option>En Crisis / Síntomas</option>
+                                      </select>
+                                    </div>
+                                  </>
+                                )}
+
+                                <button type="submit" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 rounded-lg shadow transition">
+                                  + Guardar Lectura
+                                </button>
+                              </form>
+                            </div>
+                          )}
+
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 no-print">
+                            <div class="bg-white border p-3.5 rounded-xl shadow-sm">
+                              <div class="flex justify-between items-center border-b pb-2 mb-2">
+                                <h4 class="font-bold text-xs text-indigo-900">🩸 Control de Glucosa</h4>
+                                <span class="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-bold">{glucosaSeg.length} tomas</span>
+                              </div>
+                              {glucosaSeg.length === 0 ? <p class="text-xs text-slate-400 italic py-2">Sin lecturas</p> : (
+                                <div class="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                  {glucosaSeg.map(m => (
+                                    <div key={m.id} class={`p-2.5 rounded-lg border text-xs ${m.evaluacion.estado === 'critico' ? 'bg-red-50 border-red-200' : m.evaluacion.estado === 'alerta' ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                                      <div class="flex justify-between font-bold">
+                                        <span class="text-indigo-950">{m.valorTexto}</span>
+                                        <span class="text-slate-400 font-normal text-[10px]">{m.fecha}</span>
+                                      </div>
+                                      <div class="flex justify-between items-center mt-1">
+                                        <span class="text-slate-500 text-[11px]">({m.condicion})</span>
+                                        <span class="font-semibold text-[11px]">{m.evaluacion.mensaje}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            <div class="bg-white border p-3.5 rounded-xl shadow-sm">
+                              <div class="flex justify-between items-center border-b pb-2 mb-2">
+                                <h4 class="font-bold text-xs text-sky-900">💓 Presión Arterial</h4>
+                                <span class="text-[10px] bg-sky-50 text-sky-700 px-2 py-0.5 rounded font-bold">{presionSeg.length} tomas</span>
+                              </div>
+                              {presionSeg.length === 0 ? <p class="text-xs text-slate-400 italic py-2">Sin lecturas</p> : (
+                                <div class="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                  {presionSeg.map(m => (
+                                    <div key={m.id} class={`p-2.5 rounded-lg border text-xs ${m.evaluacion.estado === 'critico' ? 'bg-red-50 border-red-200' : m.evaluacion.estado === 'alerta' ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                                      <div class="flex justify-between font-bold">
+                                        <span class="text-sky-950">{m.valorTexto}</span>
+                                        <span class="text-slate-400 font-normal text-[10px]">{m.fecha}</span>
+                                      </div>
+                                      <div class="flex justify-between items-center mt-1">
+                                        <span class="text-slate-500 text-[11px]">({m.condicion})</span>
+                                        <span class="font-semibold text-[11px]">{m.evaluacion.mensaje}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {seguimientoImprimir && seguimientoImprimir.id === seg.id && (
+                            <div class="print-only space-y-4">
+                              {glucosaSeg.length > 0 && (
+                                <div>
+                                  <h4 class="font-bold text-sm text-indigo-900 border-b pb-1 mb-2">🩸 Control de Glucosa</h4>
+                                  <table class="w-full text-left border-collapse text-xs">
+                                    <thead>
+                                      <tr class="bg-indigo-50 border-b">
+                                        <th class="p-1.5">Fecha y Hora</th>
+                                        <th class="p-1.5">Valor</th>
+                                        <th class="p-1.5">Condición</th>
+                                        <th class="p-1.5">Evaluación</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {glucosaSeg.map(m => (
+                                        <tr key={m.id} class="border-b">
+                                          <td class="p-1.5">{m.fecha}</td>
+                                          <td class="p-1.5 font-bold">{m.valorTexto}</td>
+                                          <td class="p-1.5">{m.condicion}</td>
+                                          <td class="p-1.5 font-semibold">{m.evaluacion.mensaje}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+
+                              {presionSeg.length > 0 && (
+                                <div>
+                                  <h4 class="font-bold text-sm text-sky-900 border-b pb-1 mb-2">💓 Presión Arterial</h4>
+                                  <table class="w-full text-left border-collapse text-xs">
+                                    <thead>
+                                      <tr class="bg-sky-50 border-b">
+                                        <th class="p-1.5">Fecha y Hora</th>
+                                        <th class="p-1.5">Sístole/Diástole</th>
+                                        <th class="p-1.5">Condición</th>
+                                        <th class="p-1.5">Evaluación</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {presionSeg.map(m => (
+                                        <tr key={m.id} class="border-b">
+                                          <td class="p-1.5">{m.fecha}</td>
+                                          <td class="p-1.5 font-bold">{m.valorTexto}</td>
+                                          <td class="p-1.5">{m.condicion}</td>
+                                          <td class="p-1.5 font-semibold">{m.evaluacion.mensaje}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                        </div>
+                      );
+                    })
+                  )}
+
+                </div>
+
+                <div class="p-4 bg-slate-100 border-t border-slate-200 flex justify-end no-print">
+                  <button onClick={() => setPacienteSeleccionado(null)} class="bg-slate-600 hover:bg-slate-700 text-white px-5 py-2 rounded-lg text-sm font-medium">Cerrar Ventana</button>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {/* MODAL INDEPENDIENTE DE ANTICONCEPTIVOS */}
+          {pacienteAnticonceptivoSel && (
+            <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div class="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+                
+                <div class="p-5 border-b border-purple-200 flex justify-between items-center bg-purple-50 no-print">
+                  <div>
+                    <h2 class="text-xl font-bold text-purple-900 capitalize">💉 Inyecciones Anticonceptivas: {pacienteAnticonceptivoSel.nombre}</h2>
+                    <p class="text-xs text-purple-700 mt-0.5">DNI: {pacienteAnticonceptivoSel.dni} | Teléfono: {pacienteAnticonceptivoSel.telefono || 'Sin registro'} | Género: {pacienteAnticonceptivoSel.genero || 'Femenino'}</p>
+                    <p class="text-xs text-rose-800 mt-1 font-medium">
+                      ⚠️ <strong>Alergias:</strong> {pacienteAnticonceptivoSel.alergias ? `${pacienteAnticonceptivoSel.alergias} (${pacienteAnticonceptivoSel.severidadAlergia})` : 'Ninguna registrada'}
+                    </p>
+                  </div>
+
+                  <div class="flex items-center gap-2">
+                    <button 
+                      onClick={() => prepararEImprimirAnticonceptivos(pacienteAnticonceptivoSel)} 
+                      class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition"
+                    >
+                      🖨️ Imprimir PDF
+                    </button>
+                    <button onClick={() => setPacienteAnticonceptivoSel(null)} class="text-slate-400 hover:text-slate-600 p-2 text-lg">✕</button>
+                  </div>
+                </div>
+
+                <div id="print-area" class="p-6 overflow-y-auto flex-grow space-y-6">
+                  
+                  {impresionAnticonceptivos && (
+                    <div class="print-only border-b-2 border-purple-900 pb-4 mb-4">
+                      <div class="flex justify-between items-center mb-2">
+                        <h1 class="text-2xl font-bold text-purple-900">BOTICA-VILLAZAR</h1>
+                        <span class="text-xs text-slate-500">Impreso: {new Date().toLocaleDateString()}</span>
+                      </div>
+                      <div class="grid grid-cols-2 gap-2 text-xs bg-purple-50 p-3 rounded border border-purple-200">
+                        <p><strong>Paciente:</strong> {pacienteAnticonceptivoSel.nombre}</p>
+                        <p><strong>DNI:</strong> {pacienteAnticonceptivoSel.dni}</p>
+                        <p><strong>Género:</strong> {pacienteAnticonceptivoSel.genero || 'Femenino'}</p>
+                        <p><strong>Alergias:</strong> {pacienteAnticonceptivoSel.alergias ? `${pacienteAnticonceptivoSel.alergias} (${pacienteAnticonceptivoSel.severidadAlergia})` : 'Ninguna'}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* BOTONES DE WHATSAPP RÁPIDOS EN EL MODAL */}
+                  {pacienteAnticonceptivoSel.inyeccionesAnticonceptivas && pacienteAnticonceptivoSel.inyeccionesAnticonceptivas.length > 0 && (
+                    <div class="bg-emerald-50 p-3.5 rounded-xl border border-emerald-200 flex flex-col sm:flex-row items-center justify-between gap-3 no-print">
+                      <div>
+                        <h4 class="text-xs font-bold text-emerald-900">📲 Notificar Recordatorio de Aplicación</h4>
+                        <p class="text-[11px] text-emerald-700">Envíe un mensaje automático con la fecha límite calculada ({pacienteAnticonceptivoSel.inyeccionesAnticonceptivas[0].proximaFecha}).</p>
+                      </div>
+                      <div class="flex flex-wrap gap-2 w-full sm:w-auto">
+                        <button
+                          onClick={() => handleEnviarWhatsAppRecordatorioAnticonceptivo(pacienteAnticonceptivoSel, 5)}
+                          class="flex-1 sm:flex-initial bg-amber-500 hover:bg-amber-600 text-white text-xs px-3 py-2 rounded-lg font-bold shadow transition"
+                        >
+                          Faltando 5 Días
+                        </button>
+                        <button
+                          onClick={() => handleEnviarWhatsAppRecordatorioAnticonceptivo(pacienteAnticonceptivoSel, 1)}
+                          class="flex-1 sm:flex-initial bg-rose-600 hover:bg-rose-700 text-white text-xs px-3 py-2 rounded-lg font-bold shadow transition"
+                        >
+                          Faltando 1 Día
+                        </button>
+                        <button
+                          onClick={() => handleEnviarWhatsAppAgradecimiento(pacienteAnticonceptivoSel)}
+                          class="flex-1 sm:flex-initial bg-teal-600 hover:bg-teal-700 text-white text-xs px-3 py-2 rounded-lg font-bold shadow transition"
+                        >
+                          🤝 Agradecimiento
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div class="bg-purple-50/50 p-4 rounded-xl border border-purple-200 no-print">
+                    <h3 class="text-xs font-bold text-purple-900 mb-3 uppercase tracking-wider">➕ Registrar Nueva Aplicación de Ampolla</h3>
+                    <form onSubmit={handleAgregarInyeccionAnticonceptiva} class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs items-end">
+                      <div>
+                        <label class="font-semibold block mb-1 text-slate-600">Marca del Inyectable *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Ej: Cyclofem, Mesigyna, Depo-Provera"
+                          class="w-full border p-2 rounded-lg bg-white"
+                          value={nuevaInyeccion.medicamento}
+                          onChange={e => setNuevaInyeccion({...nuevaInyeccion, medicamento: e.target.value})}
+                        />
+                      </div>
+
+                      <div>
+                        <label class="font-semibold block mb-1 text-slate-600">Frecuencia</label>
+                        <select
+                          class="w-full border p-2 rounded-lg bg-white font-medium"
+                          value={nuevaInyeccion.tipo}
+                          onChange={e => setNuevaInyeccion({...nuevaInyeccion, tipo: e.target.value})}
+                        >
+                          <option value="Mensual">Mensual (1 mes)</option>
+                          <option value="Trimestral">Trimestral (3 meses)</option>
+                        </select>
+                      </div>
+
+                      <button type="submit" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 rounded-lg shadow transition">
+                        + Registrar Inyección
+                      </button>
+                    </form>
+                  </div>
+
+                  <div>
+                    <h3 class="font-bold text-sm text-purple-950 mb-3 border-b pb-2">📋 Historial de Aplicaciones</h3>
+                    
+                    {(!pacienteAnticonceptivoSel.inyeccionesAnticonceptivas || pacienteAnticonceptivoSel.inyeccionesAnticonceptivas.length === 0) ? (
+                      <p class="text-xs text-slate-400 italic py-4">No hay aplicaciones registradas para esta paciente.</p>
+                    ) : (
+                      <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr class="bg-purple-100/60 border-b border-purple-200 text-purple-900">
+                            <th class="p-2.5">Fecha Aplicación</th>
+                            <th class="p-2.5">Inyectable / Marca</th>
+                            <th class="p-2.5">Tipo</th>
+                            <th class="p-2.5">📅 Próxima Aplicación</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pacienteAnticonceptivoSel.inyeccionesAnticonceptivas.map(iny => (
+                            <tr key={iny.id} class="border-b hover:bg-slate-50">
+                              <td class="p-2.5 font-medium">{iny.fechaAplicacion}</td>
+                              <td class="p-2.5 font-bold text-purple-900">{iny.medicamento}</td>
+                              <td class="p-2.5">{iny.tipo}</td>
+                              <td class="p-2.5 font-bold text-emerald-700 bg-emerald-50 rounded">📅 {iny.proximaFecha}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                </div>
+
+                <div class="p-4 bg-slate-100 border-t border-slate-200 flex justify-end no-print">
+                  <button onClick={() => setPacienteAnticonceptivoSel(null)} class="bg-slate-600 hover:bg-slate-700 text-white px-5 py-2 rounded-lg text-sm font-medium">Cerrar Ventana</button>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
